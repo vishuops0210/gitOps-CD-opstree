@@ -1,0 +1,38 @@
+# ============================================================
+# PROD — app9
+# Sync: Manual only (approval gate enforced by process)
+# Approval: Dev Lead + Ops Lead must trigger explicitly
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app9-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: prod
+    app: app9
+spec:
+  project: platform-apps
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/app9/prod-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: app9-prod
+  syncPolicy:
+    # Manual sync only — auto-sync explicitly disabled for safety
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 1
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

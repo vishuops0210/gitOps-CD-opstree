@@ -1,0 +1,43 @@
+# ============================================================
+# DEV — app1
+# Sync: Auto + self-heal + prune
+# Approval: None
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app1-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: dev
+    app: app1
+spec:
+  project: platform-apps
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/app1/dev-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: app1-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

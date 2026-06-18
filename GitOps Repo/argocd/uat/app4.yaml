@@ -1,0 +1,38 @@
+# ============================================================
+# UAT — app4
+# Sync: Manual only
+# Approval: Team lead triggers via UI or CLI
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app4-uat
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: uat
+    app: app4
+spec:
+  project: platform-apps
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/app4/uat-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: app4-uat
+  syncPolicy:
+    # Manual sync only — no automated section
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

@@ -1,0 +1,43 @@
+# ============================================================
+# DEV — frontend2
+# Sync: Auto + self-heal + prune
+# Approval: None
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: frontend2-dev
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: dev
+    app: frontend2
+spec:
+  project: platform-apps
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/frontend2/dev-values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: frontend2-dev
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

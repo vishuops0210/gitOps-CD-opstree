@@ -1,0 +1,73 @@
+# ============================================================
+# Dev values for app6
+# Environment: Development
+# Sync: Auto (ArgoCD auto-sync enabled)
+# ============================================================
+
+nameOverride: "app6"
+fullnameOverride: "app6"
+
+replicaCount: 1
+
+image:
+  repository: "gcr.io/PROJECT_ID/app6"
+  tag: "latest"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+# Dev ingress (disabled by default, enable when needed)
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: app6-dev.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+# Probes
+livenessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  enabled: true
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Dev does not use HPA or PDB
+autoscaling:
+  enabled: false
+
+pdb:
+  enabled: false
+
+# Dev config (example)
+configmap:
+  enabled: false
+  data: {}
+
+secret:
+  enabled: false
+  data: {}
+
+networkPolicy:
+  enabled: false
