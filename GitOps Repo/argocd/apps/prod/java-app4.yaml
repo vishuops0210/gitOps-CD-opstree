@@ -1,0 +1,38 @@
+# ============================================================
+# Child Application — java-app4 (Prod)
+# Purpose: Deploys app4 to the prod EKS cluster
+# Sync: Manual + approval gate
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prod-java-app4
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: prod
+    app: java-app4
+spec:
+  project: prod
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/app4/prod-values.yaml
+  destination:
+    server: https://prod-eks-endpoint.eks.amazonaws.com
+    namespace: java-app4
+  syncPolicy:
+    # Manual sync only — auto-sync explicitly disabled for safety
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 1
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

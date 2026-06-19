@@ -1,0 +1,43 @@
+# ============================================================
+# Child Application — java-app3 (Dev)
+# Purpose: Deploys app3 to the dev EKS cluster
+# Sync: Auto
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dev-java-app3
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: dev
+    app: java-app3
+spec:
+  project: dev
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/app3/dev-values.yaml
+  destination:
+    server: https://dev-eks-endpoint.eks.amazonaws.com
+    namespace: java-app3
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

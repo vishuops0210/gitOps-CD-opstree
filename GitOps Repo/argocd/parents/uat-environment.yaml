@@ -1,0 +1,37 @@
+# ============================================================
+# Parent Application — UAT Environment (App of Apps)
+# Purpose: Creates all 12 child Applications for the UAT
+# environment. Manual sync — child apps are only created
+# when someone clicks Sync on this parent tile.
+#
+# Dashboard: You see this as ONE yellow tile. Click Sync
+# → it spawns 12 child app tiles inside.
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: uat-environment
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: uat
+spec:
+  project: uat
+  source:
+    repoURL: 'https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git'
+    targetRevision: HEAD
+    path: argocd/apps/uat
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    # Manual — team lead clicks Sync to create child apps
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

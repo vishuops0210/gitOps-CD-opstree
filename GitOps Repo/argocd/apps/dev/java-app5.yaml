@@ -1,0 +1,43 @@
+# ============================================================
+# Child Application — java-app5 (Dev)
+# Purpose: Deploys app5 to the dev EKS cluster
+# Sync: Auto
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: dev-java-app5
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: dev
+    app: java-app5
+spec:
+  project: dev
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/app5/dev-values.yaml
+  destination:
+    server: https://dev-eks-endpoint.eks.amazonaws.com
+    namespace: java-app5
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

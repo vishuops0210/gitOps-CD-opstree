@@ -1,0 +1,38 @@
+# ============================================================
+# Child Application — java-app5 (Prod)
+# Purpose: Deploys app5 to the prod EKS cluster
+# Sync: Manual + approval gate
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prod-java-app5
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: prod
+    app: java-app5
+spec:
+  project: prod
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/app5/prod-values.yaml
+  destination:
+    server: https://prod-eks-endpoint.eks.amazonaws.com
+    namespace: java-app5
+  syncPolicy:
+    # Manual sync only — auto-sync explicitly disabled for safety
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 1
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

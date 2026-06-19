@@ -1,0 +1,38 @@
+# ============================================================
+# Child Application — java-app2 (UAT)
+# Purpose: Deploys app2 to the uat EKS cluster
+# Sync: Manual (team lead triggers)
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: uat-java-app2
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: uat
+    app: java-app2
+spec:
+  project: uat
+  source:
+    repoURL: https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git
+    targetRevision: HEAD
+    path: helm/platform-app
+    helm:
+      valueFiles:
+        - values.yaml
+        - ../../applications/app2/uat-values.yaml
+  destination:
+    server: https://uat-eks-endpoint.eks.amazonaws.com
+    namespace: java-app2
+  syncPolicy:
+    # Manual sync only
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

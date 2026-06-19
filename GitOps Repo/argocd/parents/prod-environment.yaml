@@ -1,0 +1,36 @@
+# ============================================================
+# Parent Application — Prod Environment (App of Apps)
+# Purpose: Creates all 12 child Applications for the Prod
+# environment. Manual sync with approval gate.
+#
+# Dashboard: You see this as ONE yellow tile. Only an
+# authorized lead can click Sync.
+# ============================================================
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prod-environment
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    environment: prod
+spec:
+  project: prod
+  source:
+    repoURL: 'https://github.com/YOUR_ORG/spring-boot-realworld-example-app.git'
+    targetRevision: HEAD
+    path: argocd/apps/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    # Manual — Dev Lead + Ops Lead must trigger explicitly
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 1
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
