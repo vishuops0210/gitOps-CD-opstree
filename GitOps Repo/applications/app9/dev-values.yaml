@@ -1,38 +1,41 @@
 # ============================================================
-# Dev values for app9
-# Environment: Development
-# Sync: Auto (ArgoCD auto-sync enabled)
+# dev values for dotnet-app2
+# Type: .NET Microservice (ASP.NET Core)
+# Port: 8080 | Health: /health
 # ============================================================
 
-nameOverride: "app9"
-fullnameOverride: "app9"
+nameOverride: "dotnet-app2"
+fullnameOverride: "dotnet-app2"
 
 replicaCount: 1
 
 image:
-  repository: "gcr.io/PROJECT_ID/app9"
+  repository: "vishu0210/dotnet-app2"
   tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
 
 resources:
   limits:
-    cpu: 500m
-    memory: 512Mi
+    cpu: 10m
+    memory: 32Mi
   requests:
-    cpu: 100m
-    memory: 256Mi
+    cpu: 10m
+    memory: 32Mi
 
-# Dev ingress (disabled by default, enable when needed)
 ingress:
   enabled: false
   className: "nginx"
   annotations: {}
   hosts:
-    - host: app9-dev.example.com
+    - host: dotnet-app2-dev.example.com
       paths:
         - path: /
           pathType: Prefix
 
-# Probes
 livenessProbe:
   enabled: true
   httpGet:
@@ -53,14 +56,17 @@ readinessProbe:
   timeoutSeconds: 3
   failureThreshold: 3
 
-# Dev does not use HPA or PDB
 autoscaling:
   enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
 
 pdb:
   enabled: false
+  minAvailable: 1
 
-# Dev config (example)
 configmap:
   enabled: false
   data: {}

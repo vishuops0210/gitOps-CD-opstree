@@ -1,38 +1,41 @@
 # ============================================================
-# Prod values for app4
-# Environment: Production
-# Sync: Manual + approval gate
+# prod values for java-app4
+# Type: Java Microservice (Spring Boot)
+# Port: 8080 | Health: /health
 # ============================================================
 
-nameOverride: "app4"
-fullnameOverride: "app4"
+nameOverride: "java-app4"
+fullnameOverride: "java-app4"
 
 replicaCount: 3
 
 image:
-  repository: "gcr.io/PROJECT_ID/app4"
+  repository: "vishu0210/java-app4"
   tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
 
 resources:
   limits:
-    cpu: 2000m
-    memory: 2Gi
+    cpu: 50m
+    memory: 128Mi
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 10m
+    memory: 64Mi
 
-# Prod ingress
 ingress:
   enabled: false
   className: "nginx"
   annotations: {}
   hosts:
-    - host: app4.example.com
+    - host: java-app4-prod.example.com
       paths:
         - path: /
           pathType: Prefix
 
-# Probes
 livenessProbe:
   enabled: true
   httpGet:
@@ -53,7 +56,6 @@ readinessProbe:
   timeoutSeconds: 3
   failureThreshold: 3
 
-# Prod uses HPA and PDB for high availability
 autoscaling:
   enabled: true
   minReplicas: 3

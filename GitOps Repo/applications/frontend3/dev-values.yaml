@@ -1,7 +1,7 @@
 # ============================================================
-# Dev values for frontend3
-# Environment: Development
-# Sync: Auto (ArgoCD auto-sync enabled)
+# dev values for frontend3
+# Type: Frontend (Nginx static)
+# Port: 80 | Health: /
 # ============================================================
 
 nameOverride: "frontend3"
@@ -10,18 +10,22 @@ fullnameOverride: "frontend3"
 replicaCount: 1
 
 image:
-  repository: "gcr.io/PROJECT_ID/frontend3"
+  repository: "vishu0210/frontend3"
   tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
 
 resources:
   limits:
-    cpu: 500m
-    memory: 512Mi
+    cpu: 200m
+    memory: 128Mi
   requests:
-    cpu: 100m
-    memory: 256Mi
+    cpu: 50m
+    memory: 64Mi
 
-# Dev ingress (disabled by default, enable when needed)
 ingress:
   enabled: false
   className: "nginx"
@@ -32,13 +36,13 @@ ingress:
         - path: /
           pathType: Prefix
 
-# Probes
+# Frontends use / for health since no /health endpoint
 livenessProbe:
   enabled: true
   httpGet:
-    path: /health
+    path: /
     port: http
-  initialDelaySeconds: 30
+  initialDelaySeconds: 10
   periodSeconds: 10
   timeoutSeconds: 5
   failureThreshold: 3
@@ -46,21 +50,23 @@ livenessProbe:
 readinessProbe:
   enabled: true
   httpGet:
-    path: /health
+    path: /
     port: http
-  initialDelaySeconds: 10
+  initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 3
 
-# Dev does not use HPA or PDB
 autoscaling:
   enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
 
 pdb:
   enabled: false
+  minAvailable: 1
 
-# Dev config (example)
 configmap:
   enabled: false
   data: {}

@@ -1,7 +1,7 @@
 # ============================================================
-# Prod values for frontend2
-# Environment: Production
-# Sync: Manual + approval gate
+# prod values for frontend2
+# Type: Frontend (Nginx static)
+# Port: 80 | Health: /
 # ============================================================
 
 nameOverride: "frontend2"
@@ -10,35 +10,39 @@ fullnameOverride: "frontend2"
 replicaCount: 3
 
 image:
-  repository: "gcr.io/PROJECT_ID/frontend2"
+  repository: "vishu0210/frontend2"
   tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
 
 resources:
   limits:
-    cpu: 2000m
-    memory: 2Gi
+    cpu: 100m
+    memory: 32Mi
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 10m
+    memory: 32Mi
 
-# Prod ingress
 ingress:
   enabled: false
   className: "nginx"
   annotations: {}
   hosts:
-    - host: frontend2.example.com
+    - host: frontend2-prod.example.com
       paths:
         - path: /
           pathType: Prefix
 
-# Probes
+# Frontends use / for health since no /health endpoint
 livenessProbe:
   enabled: true
   httpGet:
-    path: /health
+    path: /
     port: http
-  initialDelaySeconds: 30
+  initialDelaySeconds: 10
   periodSeconds: 10
   timeoutSeconds: 5
   failureThreshold: 3
@@ -46,20 +50,18 @@ livenessProbe:
 readinessProbe:
   enabled: true
   httpGet:
-    path: /health
+    path: /
     port: http
-  initialDelaySeconds: 10
+  initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 3
 
-# Prod uses HPA and PDB for high availability
 autoscaling:
   enabled: true
   minReplicas: 3
   maxReplicas: 10
   targetCPUUtilizationPercentage: 70
-  targetMemoryUtilizationPercentage: 80
 
 pdb:
   enabled: true

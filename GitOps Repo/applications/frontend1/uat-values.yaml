@@ -1,7 +1,7 @@
 # ============================================================
-# UAT values for frontend1
-# Environment: User Acceptance Testing
-# Sync: Manual (team lead triggers)
+# uat values for frontend1
+# Type: Frontend (Nginx static)
+# Port: 80 | Health: /
 # ============================================================
 
 nameOverride: "frontend1"
@@ -10,18 +10,22 @@ fullnameOverride: "frontend1"
 replicaCount: 2
 
 image:
-  repository: "gcr.io/PROJECT_ID/frontend1"
+  repository: "vishu0210/frontend1"
   tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
 
 resources:
   limits:
-    cpu: 1000m
-    memory: 1Gi
+    cpu: 10m
+    memory: 32Mi
   requests:
-    cpu: 250m
-    memory: 512Mi
+    cpu: 10m
+    memory: 128Mi
 
-# UAT ingress
 ingress:
   enabled: false
   className: "nginx"
@@ -32,13 +36,13 @@ ingress:
         - path: /
           pathType: Prefix
 
-# Probes
+# Frontends use / for health since no /health endpoint
 livenessProbe:
   enabled: true
   httpGet:
-    path: /health
+    path: /
     port: http
-  initialDelaySeconds: 30
+  initialDelaySeconds: 10
   periodSeconds: 10
   timeoutSeconds: 5
   failureThreshold: 3
@@ -46,21 +50,22 @@ livenessProbe:
 readinessProbe:
   enabled: true
   httpGet:
-    path: /health
+    path: /
     port: http
-  initialDelaySeconds: 10
+  initialDelaySeconds: 5
   periodSeconds: 5
   timeoutSeconds: 3
   failureThreshold: 3
 
-# UAT may test HPA but keep it off by default
 autoscaling:
   enabled: false
-  minReplicas: 2
-  maxReplicas: 4
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
 
 pdb:
   enabled: false
+  minAvailable: 1
 
 configmap:
   enabled: false

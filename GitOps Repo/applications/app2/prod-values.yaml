@@ -1,38 +1,41 @@
 # ============================================================
-# Prod values for app2
-# Environment: Production
-# Sync: Manual + approval gate
+# prod values for java-app2
+# Type: Java Microservice (Spring Boot)
+# Port: 8080 | Health: /health
 # ============================================================
 
-nameOverride: "app2"
-fullnameOverride: "app2"
+nameOverride: "java-app2"
+fullnameOverride: "java-app2"
 
 replicaCount: 3
 
 image:
-  repository: "gcr.io/PROJECT_ID/app2"
+  repository: "vishu0210/java-app2"
   tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
 
 resources:
   limits:
-    cpu: 2000m
-    memory: 2Gi
+    cpu: 50m
+    memory: 128Mi
   requests:
-    cpu: 500m
-    memory: 1Gi
+    cpu: 10m
+    memory: 64Mi
 
-# Prod ingress
 ingress:
   enabled: false
   className: "nginx"
   annotations: {}
   hosts:
-    - host: app2.example.com
+    - host: java-app2-prod.example.com
       paths:
         - path: /
           pathType: Prefix
 
-# Probes
 livenessProbe:
   enabled: true
   httpGet:
@@ -53,7 +56,6 @@ readinessProbe:
   timeoutSeconds: 3
   failureThreshold: 3
 
-# Prod uses HPA and PDB for high availability
 autoscaling:
   enabled: true
   minReplicas: 3
