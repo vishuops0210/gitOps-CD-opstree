@@ -10,7 +10,7 @@ fullnameOverride: "java-app5"
 replicaCount: 3
 
 image:
-  repository: "vishu0210/java-app5"
+  repository: "docker.io/vishu0210/java-app5"
   tag: "latest"
 
 service:

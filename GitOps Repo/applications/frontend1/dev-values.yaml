@@ -10,7 +10,7 @@ fullnameOverride: "frontend1"
 replicaCount: 1
 
 image:
-  repository: "vishu0210/frontend1"
+  repository: "docker.io/vishu0210/frontend1"
   tag: "latest"
 
 service:

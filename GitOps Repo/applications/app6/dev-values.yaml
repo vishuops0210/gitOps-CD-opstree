@@ -10,7 +10,7 @@ fullnameOverride: "java-app6"
 replicaCount: 1
 
 image:
-  repository: "vishu0210/java-app6"
+  repository: "docker.io/vishu0210/java-app6"
   tag: "latest"
 
 service:

@@ -70,9 +70,9 @@ echo "========================================"
 
 cd "../GitOps Repo"
 
-# Replace myregistry with actual Docker Hub username
+# Replace myregistry with actual Docker Hub username (full registry path)
 for f in applications/*/*-values.yaml; do
-  sed -i "s|myregistry/|$DH_USER/|g" "$f"
+  sed -i "s|myregistry/|$REGISTRY/|g" "$f"
 done
 
 # Verify

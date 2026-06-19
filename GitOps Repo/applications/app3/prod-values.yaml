@@ -10,7 +10,7 @@ fullnameOverride: "java-app3"
 replicaCount: 3
 
 image:
-  repository: "vishu0210/java-app3"
+  repository: "docker.io/vishu0210/java-app3"
   tag: "latest"
 
 service:

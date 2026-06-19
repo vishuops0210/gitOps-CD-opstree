@@ -10,7 +10,7 @@ fullnameOverride: "java-app4"
 replicaCount: 1
 
 image:
-  repository: "vishu0210/java-app4"
+  repository: "docker.io/vishu0210/java-app4"
   tag: "latest"
 
 service:
