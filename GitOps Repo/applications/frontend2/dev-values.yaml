@@ -3,28 +3,49 @@
 # Type: Frontend (Nginx static)
 # Port: 80 | Health: /
 # ============================================================
+nameOverride: frontend2
+fullnameOverride: frontend2
 
-nameOverride: "frontend2"
-fullnameOverride: "frontend2"
+global:
+  replicaCount: 1
 
-replicaCount: 1
+deployment:
+  image:
+    name: "docker.io/vishu0210/frontend2"
+    tag: "latest"
 
-image:
-  repository: "docker.io/vishu0210/frontend2"
-  tag: "latest"
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+  livenessProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
 
 service:
   type: ClusterIP
-  port: 80
-  targetPort: 80
-
-resources:
-  limits:
-    cpu: 200m
-    memory: 128Mi
-  requests:
-    cpu: 50m
-    memory: 64Mi
+  specs:
+    - name: http
+      port: 80
+      targetPort: 80
 
 ingress:
   enabled: false
@@ -37,43 +58,27 @@ ingress:
           pathType: Prefix
 
 # Frontends use / for health since no /health endpoint
-livenessProbe:
-  enabled: true
-  httpGet:
-    path: /
-    port: http
-  initialDelaySeconds: 10
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
-
-readinessProbe:
-  enabled: true
-  httpGet:
-    path: /
-    port: http
-  initialDelaySeconds: 5
-  periodSeconds: 5
-  timeoutSeconds: 3
-  failureThreshold: 3
-
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 3
-  targetCPUUtilizationPercentage: 70
 
 pdb:
   enabled: false
   minAvailable: 1
 
+
 configmap:
   enabled: false
   data: {}
+
 
 secret:
   enabled: false
   data: {}
 
+
 networkPolicy:
   enabled: false
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPU: 70

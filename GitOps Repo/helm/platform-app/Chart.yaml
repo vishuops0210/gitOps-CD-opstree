@@ -1,6 +1,0 @@
-apiVersion: v2
-name: platform-app
-description: A reusable Helm chart for deploying microservices and frontends
-type: application
-version: 1.0.0
-appVersion: "1.0.0"

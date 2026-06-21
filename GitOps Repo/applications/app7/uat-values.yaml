@@ -3,28 +3,49 @@
 # Type: Java Microservice (Spring Boot)
 # Port: 8080 | Health: /health
 # ============================================================
+nameOverride: java-app7
+fullnameOverride: java-app7
 
-nameOverride: "java-app7"
-fullnameOverride: "java-app7"
+global:
+  replicaCount: 2
 
-replicaCount: 2
+deployment:
+  image:
+    name: "docker.io/vishu0210/java-app7"
+    tag: "latest"
 
-image:
-  repository: "docker.io/vishu0210/java-app7"
-  tag: "latest"
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 10m
+      memory: 32Mi
+
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
 
 service:
   type: ClusterIP
-  port: 80
-  targetPort: 8080
-
-resources:
-  limits:
-    cpu: 100m
-    memory: 64Mi
-  requests:
-    cpu: 10m
-    memory: 32Mi
+  specs:
+    - name: http
+      port: 80
+      targetPort: 8080
 
 ingress:
   enabled: false
@@ -36,44 +57,28 @@ ingress:
         - path: /
           pathType: Prefix
 
-livenessProbe:
-  enabled: true
-  httpGet:
-    path: /health
-    port: http
-  initialDelaySeconds: 30
-  periodSeconds: 10
-  timeoutSeconds: 5
-  failureThreshold: 3
-
-readinessProbe:
-  enabled: true
-  httpGet:
-    path: /health
-    port: http
-  initialDelaySeconds: 10
-  periodSeconds: 5
-  timeoutSeconds: 3
-  failureThreshold: 3
-
-autoscaling:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 3
-  targetCPUUtilizationPercentage: 70
-  targetMemoryUtilizationPercentage: 80
 
 pdb:
   enabled: false
   minAvailable: 1
 
+
 configmap:
   enabled: false
   data: {}
+
 
 secret:
   enabled: false
   data: {}
 
+
 networkPolicy:
   enabled: false
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPU: 70
+  targetMemory: 80
