@@ -1,5 +1,5 @@
 # ArgoCD on GKE — Internal-Only Production Setup (Google Managed Ingress / gce-internal)
-
+this is updated
 > **Goal**: Deploy ArgoCD on a single-region, 2-node GKE cluster with **internal-only** Google Managed Ingress (GCE Internal Application Load Balancer), Google SSO, RBAC, and regional pre-shared SSL certificates.
 >
 > **Access Pattern**: NO public internet. Only company network (VPC + VPN) can reach ArgoCD.
