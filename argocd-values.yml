@@ -1,0 +1,99 @@
+global:
+  domain: argocd.yourcompany.internal
+
+controller:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+server:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  # ArgoCD runs HTTP internally. TLS is terminated at the LB.
+  extraArgs:
+    - --insecure
+
+  # ===========================================
+  # GCE INTERNAL INGRESS CONFIGURATION
+  # ===========================================
+  # GCE Ingress is built into GKE — no separate controller install needed.
+  # Uses annotation-based class (not ingressClassName field).
+  # TLS handled via regional pre-shared cert uploaded to GCP.
+  ingress:
+    enabled: true
+    ingressClassName: ""   # Not supported by GCE Ingress
+    hostname: argocd.yourcompany.internal
+    tls: false             # TLS handled by pre-shared cert annotation, NOT K8s secret
+
+    annotations:
+      # Ingress class — this tells GKE to use the built-in controller
+      kubernetes.io/ingress.class: "gce-internal"
+
+      # Associate regional pre-shared SSL certificate
+      ingress.gcp.kubernetes.io/pre-shared-cert: "argocd-selfsigned-cert"
+
+      # Force HTTPS only (disable HTTP)
+      kubernetes.io/ingress.allow-http: "false"
+
+      # Use the reserved static internal IP
+      kubernetes.io/ingress.regional-static-ip-name: "argocd-internal-ip"
+
+      # Associate FrontendConfig (for HTTPS redirect + WebSocket timeouts)
+      networking.gke.io/v1beta1.FrontendConfig: "argocd-frontend-config"
+
+repoServer:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+dex:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+applicationSet:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+notifications:
+  enabled: true
+
+configs:
+  cm:
+    # Keep local admin enabled until SSO is verified
+    admin.enabled: "true"
+    timeout.reconciliation: 180s
+    application.resourceTrackingMethod: label
+  params:
+    server.insecure: true
+  secret:
+    createSecret: true

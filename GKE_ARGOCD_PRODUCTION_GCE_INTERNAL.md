@@ -768,7 +768,9 @@ A `307` or `200` confirms: LB → Health checks → ArgoCD are all working.
 
 # 9. Phase 6 — Create BackendConfig & FrontendConfig
 
-> ⚠️ **This phase is already done in Phase 5.8.4 (steps A and B).** It is called out separately here for clarity — in production, you should apply BackendConfig + FrontendConfig BEFORE Helm install.
+> ⚠️ **FrontendConfig is NOT compatible with GCE Internal Ingress (`gce-internal`).**
+> The `redirectToHttps` feature in FrontendConfig **only works with external Application Load Balancers** (`gce` class).
+> For internal LBs, we rely on `kubernetes.io/ingress.allow-http: "false"` to block HTTP entirely — which is actually **more secure** than redirecting.
 
 ## 9.1 BackendConfig Explained
 
@@ -781,14 +783,47 @@ A `307` or `200` confirms: LB → Health checks → ArgoCD are all working.
 | `timeoutSec: 5` | 5s timeout | Must be < checkIntervalSec |
 | `timeoutSec: 300` | Backend timeout | Idle timeout for connections |
 
-## 9.2 FrontendConfig Explained
+## 9.2 FrontendConfig (NOT used for gce-internal)
 
-| Field | Value | Why |
-|-------|-------|-----|
-| `redirectToHttps.enabled: true` | Force HTTPS | All HTTP traffic redirects to HTTPS |
-| `responseCodeName: MOVED_PERMANENTLY_DEFAULT` | 301 redirect | Standard redirect behavior |
+**For `gce-internal` Ingress class, do NOT use `redirectToHttps` in FrontendConfig.**
+The GCE Internal Application Load Balancer **does not support** FrontendConfig's `redirectToHttps` feature.
 
-> 💡 For WebSocket timeout config: ArgoCD uses WebSockets for live sync. If you see stale UIs, increase timeout in FrontendConfig. But GCE Internal LB's default timeouts (generous) are usually sufficient.
+Instead, **HTTP is blocked at the LB level** via the annotation:
+```yaml
+kubernetes.io/ingress.allow-http: "false"
+```
+
+This is actually **more secure** than a redirect because:
+- A redirect still accepts HTTP traffic → attacker sees HTTP response
+- `allow-http: "false"` → LB **rejects** HTTP entirely → no response at all
+
+If you still want FrontendConfig for documentation purposes (or future external ingress migration), keep it without `redirectToHttps`:
+
+```bash
+cat > argocd-frontendconfig.yaml << 'EOF'
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: argocd-frontend-config
+  namespace: argocd
+spec:
+  # NOTE: redirectToHttps is NOT supported for gce-internal
+  # HTTP is blocked at LB level via kubernetes.io/ingress.allow-http: "false"
+EOF
+
+kubectl apply -f argocd-frontendconfig.yaml
+```
+
+### How HTTP is blocked without FrontendConfig
+
+| Approach | How it works | Security level |
+|----------|-------------|----------------|
+| **FrontendConfig redirectToHttps** | HTTP → 301 → HTTPS | Traffic hits HTTP port, gets redirected |
+| **`allow-http: "false"`** | LB rejects HTTP entirely | ✅ Better — HTTP port closed, no response |
+
+**Result**: With `allow-http: "false"`, anyone typing `http://argocd.yourcompany.internal` gets a connection refused. No data transmitted.
+
+> 💡 **For production**: Blocking HTTP entirely is the recommended approach anyway. Redirects leave HTTP open.
 
 ---
 
