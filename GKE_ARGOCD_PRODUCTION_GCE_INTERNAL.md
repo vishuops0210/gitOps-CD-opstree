@@ -627,7 +627,10 @@ kubectl apply -f argocd-backendconfig.yaml
 
 > ⚠️ **Port is 8080** — this is ArgoCD's container port (NOT the Service Port 80). GCE Ingress uses container native load balancing which routes to the pod's container port.
 
-### Step B: Create FrontendConfig
+### Step B: Create Empty FrontendConfig (gce-internal compatible)
+
+> ⚠️ **Important**: gce-internal does NOT support `redirectToHttps`. Keep FrontendConfig empty or delete it entirely.
+> HTTP is blocked via `kubernetes.io/ingress.allow-http: "false"` annotation.
 
 ```bash
 cat > argocd-frontendconfig.yaml << 'EOF'
@@ -637,10 +640,33 @@ metadata:
   name: argocd-frontend-config
   namespace: argocd
 spec:
-  # Force HTTP to HTTPS redirect
-  redirectToHttps:
-    enabled: true
-    responseCodeName: MOVED_PERMANENTLY_DEFAULT
+  # redirectToHttps is NOT supported for gce-internal
+  # HTTP is blocked via allow-http: "false" annotation instead
+EOF
+
+kubectl apply -f argocd-frontendconfig.yaml
+```
+
+### Fix: If you already created FrontendConfig with redirectToHttps
+
+If you see this error:
+```
+cannot enable HTTPS Redirects with L7 ILB
+```
+
+Fix it in one command:
+```bash
+# Delete the broken FrontendConfig completely
+kubectl delete frontendconfig argocd-frontend-config -n argocd
+
+# Re-create without redirectToHttps
+cat > argocd-frontendconfig.yaml << 'EOF'
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: argocd-frontend-config
+  namespace: argocd
+spec: {}
 EOF
 
 kubectl apply -f argocd-frontendconfig.yaml

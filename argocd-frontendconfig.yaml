@@ -3,8 +3,4 @@ kind: FrontendConfig
 metadata:
   name: argocd-frontend-config
   namespace: argocd
-spec:
-  # Force HTTP to HTTPS redirect
-  redirectToHttps:
-    enabled: true
-    responseCodeName: MOVED_PERMANENTLY_DEFAULT
+spec: {}
