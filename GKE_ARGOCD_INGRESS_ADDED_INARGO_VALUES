@@ -1,0 +1,1402 @@
+# ArgoCD on GKE — Internal-Only Secure Setup Guide
+
+> **Goal**: Deploy ArgoCD on a single-region, 2-node GKE cluster with internal-only access, Google SSO, RBAC, and TLS — all explained for someone seeing GCP for the first time.
+>
+> **Scope**: ArgoCD control plane only. Dev / UAT / Prod workload clusters are out of scope for this doc. After ArgoCD is running, we connect clusters.
+>
+> **Access Pattern**: NO public internet. Only your company network (VPC) can reach ArgoCD.
+>
+> **Region**: Single region (pick one). Examples use `asia-south1` (Mumbai). You can change it.
+>
+> **Date**: June 2026
+
+---
+
+## Table of Contents
+
+1. [How Everything Works (The Noob Section)](#1-how-everything-works-the-noob-section)
+   - 1.1 [The WiFi Analogy — Public vs Private](#11-the-wifi-analogy--public-vs-private)
+   - 1.2 [What is Ingress?](#12-what-is-ingress)
+   - 1.3 [How Internal Ingress Works (Step by Step)](#13-how-internal-ingress-works-step-by-step)
+   - 1.4 [Where Does TLS / SSL Fit?](#14-where-does-tls--ssl-fit)
+   - 1.5 [Full Architecture Diagram](#15-full-architecture-diagram)
+2. [Resource Sizing Chart](#2-resource-sizing-chart)
+3. [Phase 1 — Create GKE Cluster (UI + CLI)](#3-phase-1--create-gke-cluster-ui--cli)
+   - 3.1 [Prerequisites](#31-prerequisites)
+   - 3.2 [Option A: Google Cloud Console (UI)](#32-option-a-google-cloud-console-ui)
+   - 3.3 [Option B: gcloud CLI](#33-option-b-gcloud-cli)
+   - 3.4 [Connect kubectl](#34-connect-kubectl)
+4. [Phase 2 — Install ArgoCD](#4-phase-2--install-argocd)
+5. [Phase 3 — Generate Self-Signed Certificates](#5-phase-3--generate-self-signed-certificates)
+6. [Phase 4 — Deploy Internal NGINX Ingress Controller](#6-phase-4--deploy-internal-nginx-ingress-controller)
+   - 6.1 [Deploy NGINX Ingress Controller (Internal)](#61-deploy-nginx-ingress-controller-internal)
+   - 6.2 [Get Internal IP & Test](#62-get-internal-ip--test)
+7. [Phase 5 — Google SSO](#7-phase-5--google-sso)
+   - 7.1 [Create OAuth App in Google Cloud](#71-create-oauth-app-in-google-cloud)
+   - 7.2 [Configure Dex in ArgoCD](#72-configure-dex-in-argocd)
+8. [Phase 6 — RBAC (Role-Based Access Control)](#8-phase-6--rbac-role-based-access-control)
+9. [Phase 7 — Verification & Go-Live](#9-phase-7--verification--go-live)
+10. [Accessing ArgoCD from Your Laptop](#10-accessing-argocd-from-your-laptop)
+11. [Monthly Cost Estimate](#11-monthly-cost-estimate)
+12. [Troubleshooting](#12-troubleshooting)
+13. [Quick Command Cheat Sheet](#13-quick-command-cheat-sheet)
+
+---
+
+# 1. How Everything Works (The Noob Section)
+
+Read this section first. It explains every component so you sound like you know what you're talking about in front of your manager.
+
+---
+
+## 1.1 The WiFi Analogy — Public vs Private
+
+### Your Home WiFi
+
+At your home, your WiFi router creates a **private network**:
+- Your laptop: `192.168.1.10`
+- Your phone: `192.168.1.11`
+- Your TV: `192.168.1.12`
+
+These are **private IP addresses** (RFC 1918). Your neighbor **cannot** open `http://192.168.1.10` from their house because they are on a different network.
+
+But you **can** open that IP from your phone because both devices are connected to the **same WiFi / same network**.
+
+### Public vs Private — The Difference
+
+| Aspect | Public | Private (Internal) |
+|--------|--------|--------------------|
+| **IP Address** | Something like `34.120.45.67` (anyone can reach) | Something like `10.0.15.30` (only inside the network) |
+| **Who can access?** | Anyone on the internet | Only devices inside the same VPC / network |
+| **Google Cloud equivalent** | External HTTP(S) Load Balancer | Internal Load Balancer |
+| **Your WiFi equivalent** | Your public IP (seen by websites) | Your laptop's IP `192.168.1.x` |
+| **Security** | Needs WAF, DDoS protection, strict auth | Already isolated from the internet |
+
+**What we are building**: We create an **Internal Load Balancer** for ArgoCD. It gets a **private IP** inside your company's Google VPC. Just like your laptop at `192.168.1.10` can only be accessed by devices on your WiFi, the ArgoCD LB can only be accessed by computers inside your company's Google Cloud network (or connected via VPN).
+
+---
+
+## 1.2 What is Ingress?
+
+### Simple Definition
+
+> **Ingress** = A door into your Kubernetes cluster that knows WHERE to send traffic.
+
+Imagine an apartment building:
+- There is **one main entrance** (the Ingress)
+- Inside, there are many apartments: Apartment 101 (ArgoCD), Apartment 102 (Monitoring), Apartment 103 (App Dashboard)
+- The doorman at the entrance reads the name on the envelope and delivers it to the right apartment
+
+In Kubernetes:
+- The **Ingress Controller** = The doorman (a pod running inside the cluster)
+- The **Ingress Resource** = The list of rules ("if hostname is argocd.company.com, send to ArgoCD service")
+- The **Service** = The apartment door (routes to pods)
+- The **Pod** = The actual app running inside
+
+### Why Not Just Use a Service?
+
+A Kubernetes `Service` is like a direct phone number to one app. It handles **Layer 4** (TCP/UDP) traffic.
+
+An `Ingress` is smarter. It handles **Layer 7** (HTTP/HTTPS) traffic. It can:
+- Route `argocd.company.com` → ArgoCD
+- Route `grafana.company.com` → Grafana
+- Route `api.company.com/users` → User microservice
+- Terminate TLS (decrypt HTTPS) using an SSL certificate
+- Enforce HTTPS redirects
+
+### Two Types of Ingress You Will Hear About
+
+| Type | What It Is | Cost | Best For |
+|------|-----------|------|----------|
+| **GCE Ingress (native)** | Google's managed ingress. Creates a Google Cloud Load Balancer automatically. | Forwarding rules cost ~$18/mo | Public-facing apps, auto-scaling |
+| **NGINX Ingress** | An open-source ingress controller running as pods inside YOUR cluster. You control everything. | Free (runs on your existing nodes) | Private/internal apps, custom rules, learning |
+
+**For this setup, we use NGINX Ingress** because:
+1. It is fully internal (no public IP)
+2. It costs nothing extra
+3. It is easier to understand and debug
+4. You control TLS completely
+
+---
+
+## 1.3 How Internal Ingress Works (Step by Step)
+
+Here is the EXACT path your browser takes when you access ArgoCD internally:
+
+```
+Step 1: YOUR LAPTOP (inside company network)
+        You open: https://argocd.yourcompany.internal
+
+Step 2: COMPANY VPN / ROUTER / FIREWALL
+        Checks: Is this request coming from inside the company?
+        Result: YES → Forward to Google Cloud
+        (If NO → Block it)
+
+Step 3: GOOGLE CLOUD INTERNAL LOAD BALANCER
+        This is NOT a public load balancer.
+        It has a PRIVATE IP like: 10.0.15.30
+        Only Google Cloud VPC traffic can reach this IP.
+        Action: Forwards the HTTPS packet to a NodePort
+
+Step 4: GKE NODE (one of your 2 worker nodes)
+        The NodePort opens traffic to the node.
+        The kube-proxy routes it to the NGINX pod.
+
+Step 5: NGINX INGRESS CONTROLLER POD
+        Reads the hostname: "argocd.yourcompany.internal"
+        Matches against the Ingress rule defined in argocd-values.yaml.
+        Action: "This packet goes to the ArgoCD server service."
+        Also: Decrypts HTTPS using the SSL certificate.
+
+Step 6: ARGOCD SERVER SERVICE
+        A Kubernetes Service load-balances across ArgoCD server pods.
+        Action: Sends the packet to one ArgoCD server pod.
+
+Step 7: ARGOCD SERVER POD
+        ArgoCD receives the request on HTTP (inside the cluster).
+        Serves the login page.
+```
+
+### What Makes This "Internal Only"?
+
+The magic happens at **Step 3**. The Google Cloud Internal Load Balancer:
+- Does **NOT** get a public IP address
+- Gets an IP address from your **private subnet** range (e.g., `10.0.0.0/20`)
+- Can only be reached by:
+  - Other VMs in the same VPC
+  - VMs in VPCs connected via VPC peering
+  - Your laptop if you are connected to the company VPN
+  - On-premises servers connected via Cloud Interconnect / VPN
+
+---
+
+## 1.4 Where Does TLS / SSL Fit?
+
+### What is TLS/SSL?
+
+> **TLS (Transport Layer Security)** = Encryption that protects data between your browser and the server.
+
+Without TLS, everything is sent as **plain text**:
+- Passwords, tokens, API keys — anyone sniffing the network can read them.
+
+With TLS, everything is **encrypted**:
+- Even if someone intercepts the traffic, it looks like random garbage without the private key.
+
+### The Two "TLS Moments" in Our Setup
+
+| Location | What Happens | Certificate Used |
+|----------|-------------|----------------|
+| **Browser → Internal LB** | HTTPS traffic encrypted from browser to load balancer | Self-signed cert (demo) / Client-provided cert (production) |
+| **LB → NGINX → ArgoCD pods** | Inside the cluster, traffic can be HTTP (already in a private network) | None needed — VPC is trusted |
+
+### Self-Signed vs Real Certificates
+
+| Type | What It Is | Browser Warning? | When to Use |
+|------|-----------|------------------|-------------|
+| **Self-signed** | You generate it yourself. Browser doesn't recognize the issuer. | ⚠️ Yes — "Your connection is not private" | Demo, testing, internal tools, before client provides real cert |
+| **CA-signed** | Issued by a trusted authority (Let's Encrypt, DigiCert, etc.) | ✅ No warning | Production, public-facing apps |
+| **Client-provided** | Your client's IT team gives you a `.crt` and `.key` file | ✅ No warning (if properly configured) | This demo — we will swap self-signed with client's cert later |
+
+> **For this demo**: We generate a self-signed certificate. After the demo, you simply replace the Kubernetes Secret with the client's certificate files — no other changes needed.
+
+---
+
+## 1.5 Full Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│   OUTSIDE WORLD (INTERNET)                                                  │
+│   ════════════════════════                                                  │
+│                                                                             │
+│   Hacker's laptop ────────► ❌ BLOCKED                                     │
+│   Random person ──────────► ❌ BLOCKED                                     │
+│                                                                             │
+│   No public IP exists for ArgoCD. The internal LB has NO internet face.    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      ▲
+                                      │ Only internal traffic passes
+                                      │
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│   COMPANY NETWORK / VPN / GOOGLE CLOUD VPC                                  │
+│   ════════════════════════════════════════                                  │
+│                                                                             │
+│   Your laptop (office) ─────────────────────┐                              │
+│   Your phone (company WiFi) ────────────────┤                              │
+│   Cloud VM in same VPC ─────────────────────┤                              │
+│   On-prem server (via VPN) ─────────────────┤                              │
+│                                             │                              │
+│                                             ▼                              │
+│                              ┌────────────────────────────┐                │
+│                              │  GOOGLE LOAD BALANCER      │                │
+│                              │  TYPE: INTERNAL            │                │
+│                              │  IP: 10.0.15.30            │                │
+│                              │  (Private — no public IP)  │                │
+│                              └────────────┬───────────────┘                │
+│                                           │                                │
+│                                           │ HTTPS (TLS encrypted)          │
+│                                           ▼                                │
+│                              ┌────────────────────────────┐                │
+│                              │  GKE NODE 1  or  NODE 2    │                │
+│                              │  (your 2-node cluster)     │                │
+│                              └────────────┬───────────────┘                │
+│                                           │                                │
+│                          ┌────────────────┼────────────────┐               │
+│                          │                │                │               │
+│                          ▼                ▼                ▼               │
+│                     NAMESPACE: ingress-nginx                               │
+│              ┌──────────────────────────────────────────┐                  │
+│              │  NGINX Ingress Controller Pod            │                  │
+│              │  Ingress rules defined in               │                  │
+│              │  argocd-values.yaml (server.ingress)    │                  │
+│              └────────────────────┬─────────────────────┘                  │
+│                                   │                                        │
+│                                   │ HTTP (inside cluster — already trusted)│
+│                                   ▼                                        │
+│                          ┌──────────────────┐                              │
+│                          │  ArgoCD Service  │                              │
+│                          │  (ClusterIP)     │                              │
+│                          └────────┬─────────┘                              │
+│                                   │                                        │
+│                                   ▼                                        │
+│              NAMESPACE: argocd                                             │
+│              ┌──────────────────┐   ┌──────────────────────────┐           │
+│              │  ArgoCD Server   │──►│  Dex Server Pod          │           │
+│              │  Pod             │   │  (Google SSO)            │           │
+│              └──────────────────┘   └──────────────────────────┘           │
+│                                                                             │
+│   After login → Google verifies you → Dex tells ArgoCD who you are         │
+│   → ArgoCD checks RBAC rules → You see the dashboard                       │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+# 2. Resource Sizing Chart
+
+## 2.1 Important Concept: ArgoCD Does NOT Run Your Apps
+
+Your 9 microservices + 3 frontends running in dev / uat / prod are **NOT** running on the ArgoCD cluster. They run on separate **workload clusters** (dev-gke, uat-gke, prod-gke).
+
+The ArgoCD cluster only runs:
+1. ArgoCD server — the web UI
+2. ArgoCD application controller — the "brain" that compares Git with actual cluster state
+3. ArgoCD repo-server — generates Kubernetes YAML from Git
+4. ArgoCD dex-server — handles Google login
+5. Redis — tiny in-memory cache
+6. ApplicationSet controller — generates multiple apps from templates
+7. Notifications controller — sends Slack/email alerts
+
+These need **moderate** resources. The controller's CPU/memory scales with the number of apps it is **managing**, not running.
+
+## 2.2 Sizing Table
+
+### For the Demo (2 nodes)
+
+| ArgoCD Component | CPU Request | Memory Request | CPU Limit | Memory Limit | Replicas |
+|-----------------|-------------|----------------|-----------|--------------|----------|
+| Server (UI/API) | 250m | 256Mi | 1000m | 1Gi | 1 |
+| Controller | 500m | 512Mi | 2000m | 2Gi | 1 |
+| Repo Server | 250m | 256Mi | 1000m | 1Gi | 1 |
+| Dex (SSO) | 50m | 64Mi | 200m | 256Mi | 1 |
+| Redis | 100m | 128Mi | 200m | 256Mi | 1 |
+| ApplicationSet | 100m | 128Mi | 500m | 512Mi | 1 |
+| Notifications | 50m | 64Mi | 200m | 128Mi | 1 |
+| **Total Requests** | **~1.3 vCPU** | **~1.4 GiB** | | | |
+| **Total Limits** | | | **~4.1 vCPU** | **~5.1 GiB** | |
+
+### Recommended GKE Node Types
+
+| Scenario | Machine Type | CPU per Node | RAM per Node | Node Count | Total CPU | Total RAM | Monthly Cost (approx) |
+|----------|-------------|--------------|--------------|------------|-----------|-----------|----------------------|
+| **Demo (what we build)** | e2-medium | 1 shared | 4 GB | 2 | 2 vCPU | 8 GB | ~$49 (nodes) + $73 (mgmt) = ~$122 |
+| **More headroom** | e2-standard-2 | 2 guaranteed | 8 GB | 2 | 4 vCPU | 16 GB | ~$98 (nodes) + $73 (mgmt) = ~$171 |
+| **Future scale-up** | e2-standard-2 | 2 guaranteed | 8 GB | 3 | 6 vCPU | 24 GB | ~$147 + $73 = ~$220 |
+| **If you also run monitoring** | e2-standard-4 | 4 guaranteed | 16 GB | 2 | 8 vCPU | 32 GB | ~$196 + $73 = ~$269 |
+
+> 💡 **Why 2 nodes of e2-medium is enough for the demo**:
+> - Total requests: 1.3 vCPU / 1.4 GiB
+> - Node capacity: 2 vCPU / 8 GiB total (across 2 nodes)
+> - Headroom: ~35% CPU, ~82% RAM still available
+> - For ~36 managed apps (12 env × 3), the controller uses ~512Mi RAM. At 100+ apps, scale to e2-standard-2.
+
+### Cost Comparison: GKE vs EKS
+
+| Item | AWS EKS (your old setup) | GKE (our new setup) |
+|------|-------------------------|---------------------|
+| Control plane fee | $73/month (zonal/regional same) | $73/month (same for all GKE clusters) |
+| 2 nodes t3.small (AWS) | 2 × $0.0208/hr × 730 = ~$30/mo | — |
+| 2 nodes e2-medium (GCP) | — | 2 × $0.0335/hr × 730 = ~$49/mo |
+| 2 nodes e2-standard-2 | — | 2 × $0.067/hr × 730 = ~$98/mo |
+| **Total for 2 nodes** | **~$103/mo** | **~$122/mo** (e2-medium) or **~$171/mo** (e2-standard-2) |
+
+> e2-medium is slightly more expensive than t3.small but gives **2x the RAM** (4 GB vs 2 GB). ArgoCD benefits from the extra RAM.
+
+---
+
+# 3. Phase 1 — Create GKE Cluster (UI + CLI)
+
+## 3.1 Prerequisites
+
+Install these tools on your laptop:
+
+| Tool | Purpose | Install Command |
+|------|---------|----------------|
+| gcloud | Talk to Google Cloud | https://cloud.google.com/sdk/docs/install |
+| kubectl | Talk to Kubernetes | `gcloud components install kubectl` |
+| helm | Package manager for K8s | https://helm.sh/docs/intro/install/ |
+
+```bash
+# Verify installations
+gcloud version
+kubectl version --client
+helm version
+```
+
+```bash
+# Login to Google Cloud
+gcloud auth login
+gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
+```
+
+Enable required APIs (one-time per project):
+
+```bash
+gcloud services enable container.googleapis.com
+```
+
+---
+
+## 3.2 Option A: Google Cloud Console (UI) — Click by Click
+
+### Step 1: Open Kubernetes Engine
+1. Go to https://console.cloud.google.com/kubernetes
+2. Make sure your project is selected (top left dropdown)
+3. Click **"Create"** or **"Create Cluster"**
+
+### Step 2: Choose Cluster Type
+1. Select **"Standard"** (NOT Autopilot — we want control over nodes)
+2. Choose **"GKE Standard cluster"**
+3. Click **"Configure"**
+
+### Step 3: Basic Cluster Details
+| Field | Value | Why |
+|-------|-------|-----|
+| **Name** | `argocd-cluster` | Any name you want |
+| **Location type** | Zonal | Single zone (cheapest, no multi-zone overhead) |
+| **Zone** | `asia-south1-a` (or your preferred zone) | 1 zone = 1 region |
+| **Release channel** | Regular | Stable, updated automatically |
+| **Kubernetes version** | Latest (e.g., 1.29+) | Let GKE pick |
+
+### Step 4: Networking (CRITICAL for Internal Setup)
+
+Click **"default-pool"** → **"Networking"** tab:
+
+| Field | Value |
+|-------|-------|
+| **VPC network** | `default` (or create a new one) |
+| **Node subnet** | `default` |
+| **Private cluster** | ❌ Uncheck (for demo; simplifies setup) |
+| **Enable VPC-native traffic routing** | ✅ Checked (automatic) |
+| **Intranet visibility** | ❌ Leave unchecked |
+
+> ⚠️ **"Public cluster" is OK for the demo**. Our INTERNAL Ingress setup makes ArgoCD unreachable from the internet regardless. For true hardening, enable Private Cluster in a later phase.
+
+### Step 5: Node Pool Configuration
+
+Click **"default-pool"** → **"Nodes"** tab:
+
+| Field | Value |
+|-------|-------|
+| **Pool name** | `default-pool` |
+| **Number of nodes** | **2** |
+| **Machine type** | **e2-medium** (or e2-standard-2 if budget allows) |
+| **Image type** | `Container-Optimized OS with containerd` |
+| **Boot disk type** | `Standard persistent disk` |
+| **Boot disk size** | **50 GB** |
+
+Leave everything else default.
+
+### Step 6: Security
+
+| Field | Value |
+|-------|-------|
+| **Enable Workload Identity** | ✅ Checked (required for secure secret access later) |
+| **Enable Shielded GKE Nodes** | ✅ Checked |
+
+### Step 7: Create
+1. Click **"Create"** at the bottom
+2. Wait 5–8 minutes for the cluster to provision
+3. You will see a green checkmark when ready
+
+---
+
+## 3.3 Option B: gcloud CLI — One Command
+
+If you prefer the terminal (faster), use this command:
+
+```bash
+export PROJECT_ID="jovial-beach-499716-g8"
+export GCP_REGION="asia-south1"
+export GCP_ZONE="asia-south1-a"
+export CLUSTER_NAME="argocd-cluster"
+
+gcloud config set project $PROJECT_ID
+gcloud config set compute/region $GCP_REGION
+gcloud config set compute/zone $GCP_ZONE
+
+gcloud container clusters create $CLUSTER_NAME \
+  --zone=$GCP_ZONE \
+  --release-channel=regular \
+  --machine-type=e2-medium \
+  --num-nodes=2 \
+  --min-nodes=1 \
+  --max-nodes=4 \
+  --enable-autoscaling \
+  --disk-type=pd-standard \
+  --disk-size=50 \
+  --workload-pool=${PROJECT_ID}.svc.id.goog \
+  --enable-shielded-nodes \
+  --shielded-secure-boot \
+  --shielded-integrity-monitoring \
+  --enable-ip-alias \
+  --addons=HorizontalPodAutoscaling,HttpLoadBalancing,GcePersistentDiskCsiDriver \
+  --labels=env=argocd,team=platform
+
+echo "✅ Cluster created: $CLUSTER_NAME"
+```
+
+**Wait time**: 5–8 minutes. You will see progress in the terminal.
+
+### Why These Flags?
+
+| Flag | What It Does |
+|------|-------------|
+| `--zone` | Puts everything in ONE zone (single region, cheapest) |
+| `--machine-type=e2-medium` | 1 vCPU, 4 GB RAM per node — enough for ArgoCD demo |
+| `--num-nodes=2` | Exactly what the client wants |
+| `--enable-autoscaling` | If ArgoCD needs more room, nodes auto-scale to 4 max |
+| `--workload-pool` | Lets Kubernetes pods securely access Google Cloud services (Workload Identity) |
+| `--enable-shielded-nodes` | Boot security (verifies node integrity) |
+| `--enable-ip-alias` | VPC-native networking (required for internal LB) |
+
+---
+
+## 3.4 Connect kubectl
+
+```bash
+# Download cluster credentials to your laptop
+gcloud container clusters get-credentials $CLUSTER_NAME --zone=$GCP_ZONE
+
+# Verify: you should see 2 nodes
+kubectl get nodes -o wide
+```
+
+**Expected output:**
+```
+NAME                                        STATUS   ROLES    AGE   VERSION
+gke-argocd-cluster-default-pool-xxx-yyy     Ready    <none>   1m    v1.29.x
+gke-argocd-cluster-default-pool-zzz-www     Ready    <none>   1m    v1.29.x
+```
+
+**If you see 2 nodes with status `Ready`, your cluster is alive.**
+
+---
+
+# 4. Phase 2 — Install ArgoCD
+
+## 4.1 Add Helm Repository
+
+```bash
+helm repo add argo https://argoproj.github.io/argo-helm
+helm repo update
+```
+
+## 4.2 Create Namespace
+
+```bash
+kubectl create namespace argocd
+```
+
+## 4.3 Create Custom Values for 2-Node Cluster
+
+> ⚠️ **Order matters**: The TLS secret (`argocd-server-tls`) and NGINX Ingress Controller **must exist before** you run `helm install`. The Helm chart creates the Ingress object immediately on install, and NGINX will try to bind the cert right away.
+>
+> **Correct install order:**
+> 1. Phase 4 → Install NGINX Ingress Controller (creates the internal LB)
+> 2. Phase 3 → Create TLS secret
+> 3. Phase 2 (this step) → `helm install argocd` (Ingress object created automatically)
+
+Create a file named `argocd-values.yaml`:
+
+```yaml
+global:
+  domain: argocd.yourcompany.internal
+
+controller:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 2000m
+      memory: 2Gi
+
+server:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+  # ArgoCD server runs HTTP internally.
+  # TLS is terminated at NGINX — traffic never leaves the cluster unencrypted.
+  extraArgs:
+    - --insecure
+
+  ingress:
+    enabled: true
+
+    # Use the NGINX ingress controller we installed in Phase 4.
+    # This DOES NOT create a new Load Balancer — it attaches to the
+    # existing NGINX controller which already has the internal-only LB.
+    ingressClassName: nginx
+
+    annotations:
+      # Force all HTTP traffic to redirect to HTTPS
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+      # ArgoCD uses WebSockets for live sync status — needs long timeouts
+      nginx.ingress.kubernetes.io/proxy-read-timeout: "1800"
+      nginx.ingress.kubernetes.io/proxy-send-timeout: "1800"
+
+    # The hostname users will type in their browser
+    hostname: argocd.yourcompany.internal
+
+    # Enable TLS on the Ingress
+    tls: true
+
+    # Point to the TLS secret we created in Phase 3
+    extraTls:
+      - hosts:
+          - argocd.yourcompany.internal
+        secretName: argocd-server-tls
+
+repoServer:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+dex:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+applicationSet:
+  enabled: true
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+notifications:
+  enabled: true
+
+configs:
+  cm:
+    # Keep local admin enabled until SSO is verified
+    admin.enabled: "true"
+    timeout.reconciliation: 180s
+    application.resourceTrackingMethod: label
+  params:
+    server.insecure: true
+  secret:
+    createSecret: true
+```
+
+### Why `ingressClassName: nginx` Does NOT Create a New LB
+
+This is the most important thing to understand about this setup:
+
+| What it is | What it does |
+|-----------|-------------|
+| `ingressClassName: nginx` | Tells Kubernetes: "Hand this Ingress rule to the NGINX controller" |
+| NGINX controller | Already running with an **Internal** Load Balancer (from Phase 4) |
+| Result | ArgoCD traffic flows through the **existing** internal LB — no new LB created |
+
+If you used `ingressClassName: gce` instead, GKE would spin up a **new public** Load Balancer for ArgoCD. We avoid this entirely by using `nginx`.
+
+## 4.4 Install ArgoCD
+
+```bash
+helm install argocd argo/argo-cd \
+  --namespace argocd \
+  --version 7.8.10 \
+  --values argocd-values.yaml \
+  --wait --timeout 10m
+```
+
+## 4.5 Verify Installation
+
+```bash
+kubectl get pods -n argocd
+```
+
+**Expected output (all Running):**
+```
+NAME                                                READY   STATUS
+argocd-application-controller-0                     1/1     Running
+argocd-applicationset-controller-xxx                1/1     Running
+argocd-dex-server-xxx                               1/1     Running
+argocd-notifications-controller-xxx                 1/1     Running
+argocd-redis-xxx                                    1/1     Running
+argocd-repo-server-xxx                              1/1     Running
+argocd-server-xxx                                   1/1     Running
+```
+
+Verify the Ingress object was created:
+
+```bash
+kubectl get ingress -n argocd
+```
+
+**Expected output:**
+```
+NAME             CLASS   HOSTS                          ADDRESS       PORTS     AGE
+argocd-server    nginx   argocd.yourcompany.internal    10.0.15.30    80, 443   1m
+```
+
+The `ADDRESS` column shows your internal LB IP (`10.x.x.x`) — confirming it is private.
+
+## 4.6 Test Port-Forward (Admin Access, Bypasses Ingress)
+
+Before testing Ingress, confirm ArgoCD itself is healthy:
+
+```bash
+# Creates a tunnel from your laptop directly to ArgoCD (bypasses ingress)
+kubectl port-forward svc/argocd-server -n argocd 8080:80
+```
+
+Open browser: `http://localhost:8080`
+
+Get the admin password:
+```bash
+argocd admin initial-password -n argocd
+```
+
+Login with username `admin` and that password to confirm the UI loads.
+
+> **Port-forward is only for admin/testing.** It bypasses Ingress, SSO, and TLS entirely. Once Ingress is working, normal users will NEVER use this.
+
+---
+
+# 5. Phase 3 — Generate Self-Signed Certificates
+
+> ⚠️ **Do this BEFORE running `helm install argocd`** (Phase 2 step 4.4). The TLS secret must exist when the Ingress object is created.
+
+## 5.1 Why Self-Signed For This Demo?
+
+Your client hasn't provided certificates yet. We generate a temporary one so we can:
+- Test HTTPS access
+- Verify TLS termination works
+- Prove the Ingress setup is correct
+
+Later, when the client provides their `.crt` and `.key` files, you simply replace the Secret. The entire setup stays the same.
+
+## 5.2 Generate the Certificate
+
+```bash
+# Create a directory for certificates
+mkdir -p certs && cd certs
+
+# Generate a private key
+openssl genrsa -out argocd.key 2048
+
+# Generate a self-signed certificate (valid for 365 days)
+openssl req -new -x509 -key argocd.key -out argocd.crt -days 365 \
+  -subj "/C=IN/ST=MH/L=Mumbai/O=YourCompany/CN=argocd.yourcompany.internal"
+
+# Verify files exist
+ls -la argocd.key argocd.crt
+```
+
+**Output:**
+```
+-rw------- 1 user user 1704 Jun 20 10:00 argocd.key
+-rw-r--r-- 1 user user 1302 Jun 20 10:00 argocd.crt
+```
+
+## 5.3 Store as Kubernetes Secret
+
+```bash
+# Go back to project root
+cd ..
+
+# The argocd namespace must exist before this runs
+# (created in Phase 2 step 4.2 — do that first)
+kubectl create secret tls argocd-server-tls \
+  --namespace argocd \
+  --cert=certs/argocd.crt \
+  --key=certs/argocd.key
+
+# Verify
+kubectl get secret argocd-server-tls -n argocd
+```
+
+## 5.4 How to Use Client Certificates Later (Important!)
+
+When your client gives you their real certificate files (e.g., `company.crt` and `company.key`):
+
+```bash
+# Step 1: Delete the old secret
+kubectl delete secret argocd-server-tls -n argocd
+
+# Step 2: Create new secret with client certs
+kubectl create secret tls argocd-server-tls \
+  --namespace argocd \
+  --cert=company.crt \
+  --key=company.key
+
+# Step 3: Restart NGINX to pick up the new cert
+kubectl rollout restart deployment ingress-nginx-controller -n ingress-nginx
+```
+
+> That's it. No YAML changes needed anywhere.
+
+---
+
+# 6. Phase 4 — Deploy Internal NGINX Ingress Controller
+
+This section creates the NGINX Ingress Controller with an **Internal-only** Google Cloud Load Balancer. This is the foundation everything else depends on — install this first.
+
+## 6.1 Deploy NGINX Ingress Controller (Internal Only)
+
+```bash
+# Add the NGINX Helm repo
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+
+# Create values file for INTERNAL LB
+cat > nginx-values.yaml << 'EOF'
+controller:
+  replicaCount: 1
+
+  service:
+    # ─────────────────────────────────────────────────────────────────
+    # THIS IS THE KEY ANNOTATION
+    # Tells Google Cloud: "Create an INTERNAL load balancer, not public"
+    # Without this, GCP defaults to a public LB with a routable internet IP.
+    # With this, GCP assigns a private IP from your VPC subnet (e.g. 10.x.x.x).
+    # ─────────────────────────────────────────────────────────────────
+    annotations:
+      cloud.google.com/load-balancer-type: "Internal"
+      cloud.google.com/neg: '{"ingress": true}'
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  admissionWebhooks:
+    enabled: true
+    patch:
+      enabled: true
+
+  metrics:
+    enabled: false
+EOF
+
+# Install NGINX Ingress Controller in its own namespace
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx \
+  --create-namespace \
+  --values nginx-values.yaml \
+  --wait --timeout 5m
+```
+
+### Verify the Internal LB Was Created
+
+```bash
+kubectl get svc -n ingress-nginx
+```
+
+**Expected output:**
+```
+NAME                       TYPE           CLUSTER-IP      EXTERNAL-IP   PORT(S)
+ingress-nginx-controller   LoadBalancer   10.100.10.10    10.0.15.30    80:30000/TCP,443:30443/TCP
+```
+
+Two things to confirm:
+1. **TYPE = LoadBalancer** — GCP created a real load balancer
+2. **EXTERNAL-IP = `10.x.x.x`** — This is a **private** IP, NOT a public one
+
+> The `EXTERNAL-IP` column is misleadingly named by Kubernetes. When the Internal LB annotation is set, this field shows the **VPC-private IP**, not a public internet address. A public LB would show something like `34.120.x.x` here.
+
+### Why The IP Is Private
+
+The annotation does all the work:
+```yaml
+cloud.google.com/load-balancer-type: "Internal"
+```
+
+| Without this annotation | With this annotation |
+|------------------------|---------------------|
+| GCP creates a **public** LB | GCP creates an **internal** LB |
+| IP: `34.120.x.x` (internet-routable) | IP: `10.x.x.x` (VPC-private only) |
+| Anyone on the internet can attempt a connection | Only your VPC / VPN can reach it |
+
+## 6.2 Get Internal IP & Test
+
+### Step 1: Save the Internal IP
+
+```bash
+export ARGOCD_INTERNAL_IP=$(kubectl get svc ingress-nginx-controller \
+  -n ingress-nginx \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+echo "ArgoCD Internal IP: $ARGOCD_INTERNAL_IP"
+```
+
+### Step 2: Test from a Pod Inside the Cluster
+
+Since the LB is internal, your laptop cannot reach it directly (unless on VPN). Test from a pod inside the cluster instead:
+
+```bash
+kubectl run test-pod --image=curlimages/curl -it --rm -- \
+  -k -I https://$ARGOCD_INTERNAL_IP \
+  --resolve argocd.yourcompany.internal:443:$ARGOCD_INTERNAL_IP
+```
+
+**Expected output:**
+```
+HTTP/2 307
+location: https://argocd.yourcompany.internal/login
+```
+
+A `307` or `200` response confirms the full chain works: Internal LB → NGINX → TLS → ArgoCD.
+
+### Step 3: Verify the Ingress Resource (Created by Helm)
+
+```bash
+kubectl get ingress -n argocd
+kubectl describe ingress argocd-server -n argocd
+```
+
+You should see:
+- `Class: nginx` — attached to our NGINX controller
+- `Address: 10.x.x.x` — the internal LB IP
+- `TLS` section referencing `argocd-server-tls`
+
+---
+
+# 7. Phase 5 — Google SSO
+
+We now connect ArgoCD to Google so users can log in with their company Google accounts.
+
+## 7.1 Create OAuth App in Google Cloud
+
+### Step 1: Configure OAuth Consent Screen
+
+1. Go to https://console.cloud.google.com/apis/credentials/consent
+2. Click **"Create"** (or **"Edit"** if one exists)
+3. Choose **"Internal"** (only users in your Google Workspace organization)
+   - If you don't have Google Workspace, choose **"External"** for the demo
+4. Fill in the app info:
+   - **App name**: `ArgoCD Internal Dashboard`
+   - **User support email**: your email
+   - **Contact email**: your email
+5. Click **"Save and Continue"**
+6. On **Scopes**, click **"Add or Remove Scopes"** and add:
+   - `openid`
+   - `userinfo.profile`
+   - `userinfo.email`
+7. Click **"Update"** → **"Save and Continue"**
+8. On **Test Users**, add your email and any test colleagues
+9. Click **"Save and Continue"** → **"Back to Dashboard"**
+
+### Step 2: Create OAuth Client ID
+
+1. Go to https://console.cloud.google.com/apis/credentials
+2. Click **"+ Create Credentials"** → **"OAuth client ID"**
+3. **Application type**: **"Web application"**
+4. **Name**: `ArgoCD SSO`
+5. **Authorized redirect URIs** — add BOTH:
+   - `http://localhost:8080/api/dex/callback` (for port-forward testing)
+   - `https://argocd.yourcompany.internal/api/dex/callback` (for production internal access)
+6. Click **"Create"**
+7. **Copy the Client ID and Client Secret** — you will NOT see the secret again
+
+## 7.2 Store OAuth Secret in Kubernetes
+
+```bash
+export GOOGLE_CLIENT_ID="paste-your-client-id-here.apps.googleusercontent.com"
+export GOOGLE_CLIENT_SECRET="paste-your-client-secret-here"
+
+kubectl create secret generic google-oauth \
+  --namespace argocd \
+  --from-literal=dex.google.clientSecret="$GOOGLE_CLIENT_SECRET"
+```
+
+## 7.3 Configure Dex in ArgoCD
+
+Create a file `argocd-cm-patch.yaml` (safer than an inline patch command):
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+data:
+  url: "https://argocd.yourcompany.internal"
+  dex.config: |
+    connectors:
+      - type: google
+        id: google
+        name: Google
+        config:
+          clientID: YOUR_GOOGLE_CLIENT_ID
+          clientSecret: $google-oauth:dex.google.clientSecret
+          redirectURI: https://argocd.yourcompany.internal/api/dex/callback
+          # CRITICAL: Only allows @yourcompany.com emails.
+          # Personal Gmail accounts are blocked.
+          hostedDomains:
+            - yourcompany.com
+```
+
+Replace `YOUR_GOOGLE_CLIENT_ID` with your actual Client ID, then apply:
+
+```bash
+kubectl apply -f argocd-cm-patch.yaml
+```
+
+### Dex Config Explained
+
+| Field | Meaning |
+|-------|---------|
+| `type: google` | Use Google's OAuth 2.0 API |
+| `clientID` | Your Google OAuth app's client ID |
+| `clientSecret: $google-oauth:...` | References the K8s Secret — never hardcodes the value |
+| `redirectURI` | Where Google sends users after login — MUST match Google Console exactly |
+| `hostedDomains` | Only allows `@yourcompany.com` emails — blocks personal Gmail |
+
+## 7.4 Restart ArgoCD Dex & Server
+
+```bash
+kubectl rollout restart deployment argocd-dex-server -n argocd
+kubectl rollout restart deployment argocd-server -n argocd
+
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=120s
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-dex-server -n argocd --timeout=120s
+```
+
+## 7.5 Test Login via Port-Forward
+
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:80
+```
+
+Open `http://localhost:8080`:
+1. Click **"LOG IN VIA GOOGLE"**
+2. Google asks you to authorize
+3. After authorization, you are redirected back to ArgoCD
+
+If you log in successfully, SSO is working!
+
+> **If you see `redirect_uri_mismatch`**: The redirect URI in Google Console must exactly match `https://argocd.yourcompany.internal/api/dex/callback`.
+
+## 7.6 Disable Local Admin (After SSO Is Verified)
+
+Once you confirm SSO works, disable the built-in admin user:
+
+```bash
+kubectl patch configmap argocd-cm -n argocd \
+  --type merge -p '{"data":{"admin.enabled":"false"}}'
+
+kubectl rollout restart deployment argocd-server -n argocd
+```
+
+> ⚠️ **DON'T do this until you have successfully logged in via Google at least once!**
+
+If you get locked out, re-enable admin:
+```bash
+kubectl patch configmap argocd-cm -n argocd \
+  --type merge -p '{"data":{"admin.enabled":"true"}}'
+kubectl rollout restart deployment argocd-server -n argocd
+```
+
+---
+
+# 8. Phase 6 — RBAC (Role-Based Access Control)
+
+## 8.1 The RBAC File Explained Line by Line
+
+We create a ConfigMap called `argocd-rbac-cm` that defines WHO can do WHAT.
+
+### Groups You Will Use (Google Workspace / Company)
+
+| Google Group | Members | What They Can Do |
+|-------------|---------|-----------------|
+| `devops@yourcompany.com` | DevOps team | Everything (admin) |
+| `developers@yourcompany.com` | Developers | Deploy/sync apps, cannot create/delete |
+| `auditors@yourcompany.com` | QA / Security | Read-only, view everything |
+
+### The RBAC Policy Format
+
+Each line looks like this:
+```
+p, role:developer, applications, sync, */*, allow
+│  │              │             │     │    └─ Action: allow or deny
+│  │              │             │     └─ Resource path: */* = all apps
+│  │              │             └─ Action type: sync, get, create, delete...
+│  │              └─ Resource: applications, projects, repositories...
+│  └─ Role name
+└─ p = policy line (g = group mapping line)
+```
+
+## 8.2 Apply RBAC Config
+
+```bash
+cat > argocd-rbac.yaml << 'EOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+  namespace: argocd
+data:
+  # Default: anyone without a role gets read-only
+  policy.default: role:readonly
+
+  policy.csv: |
+    # =========================================================
+    # ADMIN ROLE — Full control
+    # =========================================================
+    p, role:admin, applications, *, */*, allow
+    p, role:admin, projects, *, *, allow
+    p, role:admin, repositories, *, *, allow
+    p, role:admin, certificates, *, *, allow
+    p, role:admin, accounts, *, *, allow
+    p, role:admin, gpgkeys, *, *, allow
+    p, role:admin, exec, create, */*, allow
+
+    # =========================================================
+    # DEVELOPER ROLE — Can deploy but cannot destroy
+    # =========================================================
+    p, role:developer, applications, get, */*, allow
+    p, role:developer, applications, sync, */*, allow
+    p, role:developer, applications, rollback, */*, allow
+    p, role:developer, projects, get, *, allow
+    p, role:developer, repositories, get, *, allow
+    p, role:developer, applications, create, */*, deny
+    p, role:developer, applications, delete, */*, deny
+    p, role:developer, applications, update, */*, deny
+    p, role:developer, projects, create, *, deny
+    p, role:developer, projects, delete, *, deny
+
+    # =========================================================
+    # READONLY ROLE — View only, change nothing
+    # =========================================================
+    p, role:readonly, applications, get, */*, allow
+    p, role:readonly, projects, get, *, allow
+    p, role:readonly, repositories, get, *, allow
+
+    # =========================================================
+    # GROUP MAPPINGS — Map Google groups to ArgoCD roles
+    # =========================================================
+    g, devops@yourcompany.com, role:admin
+    g, developers@yourcompany.com, role:developer
+    g, auditors@yourcompany.com, role:readonly
+
+    # Demo fallback — individual email mappings (no domain-wide delegation needed)
+    g, your-email@yourcompany.com, role:admin
+    g, dev-email@yourcompany.com, role:developer
+
+  scopes: "[email, groups]"
+EOF
+
+kubectl apply -f argocd-rbac.yaml
+```
+
+> ⚠️ **Google Groups vs Individual Emails**: For group-based mapping (`devops@yourcompany.com`) to work, Dex needs **Domain-wide Delegation** configured in Google Workspace Admin. This is a production step. For the demo, use the individual email mappings at the bottom — these work without any admin setup.
+
+### How to Enable Google Group Fetching (Production)
+
+1. In Google Cloud Console → IAM → Service Accounts → Create SA named `argocd-dex-groups-sa`
+2. Enable G Suite Domain-wide Delegation on that SA
+3. In Google Admin Console → Security → API Controls → Domain-wide Delegation:
+   - Add the SA's Client ID
+   - Scope: `https://www.googleapis.com/auth/admin.directory.group.readonly`
+4. Download the JSON key and mount it into the Dex pod
+5. Update `dex.config` in `argocd-cm` with:
+```yaml
+fetchGroups: true
+adminEmail: admin@yourcompany.com
+serviceAccountFilePath: /etc/dex/google-sa.json
+```
+
+## 8.3 Restart Server
+
+```bash
+kubectl rollout restart deployment argocd-server -n argocd
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=argocd-server -n argocd --timeout=120s
+```
+
+## 8.4 Test Each Role
+
+| Test | How | Expected Result |
+|------|-----|-----------------|
+| **Admin** | Log in with your email | See "Settings", "New App" button, can delete |
+| **Developer** | Log in with dev email | Can sync apps, no "New App" button, cannot delete |
+| **Readonly** | Log in with auditor email | Can view apps, sync button greyed out |
+| **Personal Gmail** | Try logging in with @gmail.com | Blocked by `hostedDomains` in Dex config |
+
+---
+
+# 9. Phase 7 — Verification & Go-Live
+
+## 9.1 Full Checklist
+
+```
+□ GKE cluster created with 2 nodes, e2-medium
+□ kubectl connected to cluster
+□ NGINX Ingress Controller installed (Phase 4 — done FIRST)
+□ LoadBalancer Service shows private IP (10.x.x.x) — NOT a public IP
+□ Self-signed certificate created and stored as argocd-server-tls secret
+□ ArgoCD installed via Helm with ingress.enabled: true in values
+□ Ingress object in argocd namespace shows internal IP as ADDRESS
+□ Google OAuth app created with correct redirect URIs
+□ Dex configured with Google connector via argocd-cm-patch.yaml
+□ SSO login works (admin account disabled after)
+□ RBAC ConfigMap applied
+□ All 3 roles tested (admin / developer / readonly)
+□ Personal Gmail blocked by hostedDomains
+```
+
+## 9.2 Manager Demo Script
+
+### Scene 1: Show the Architecture (30 seconds)
+
+> *"We have deployed ArgoCD on a 2-node GKE cluster in a single region. The entire setup is internal-only — there is no public IP address. Only computers inside our company network can reach it."*
+
+```bash
+echo "ArgoCD Internal IP: $ARGOCD_INTERNAL_IP"
+```
+
+> *"This IP — $ARGOCD_INTERNAL_IP — is a private address. It does not exist on the internet. It is exactly like your laptop at home having `192.168.1.10` — only your WiFi devices can reach it."*
+
+### Scene 2: Show SSO (1 minute)
+
+> *"No local passwords. Everyone logs in with their company Google account."*
+
+1. Open `https://argocd.yourcompany.internal` (or via VPN/company network)
+2. Click **"Login with Google"**
+3. Log in
+
+> *"If I try with my personal Gmail — blocked. Only @yourcompany.com emails work."*
+
+### Scene 3: Show RBAC (1 minute)
+
+> *"Not everyone gets the same permissions."*
+
+1. Click **Settings → Accounts**
+2. Point out your role: **Admin**
+3. Open incognito window, log in as developer email
+4. Show: No "New App" button, no Settings menu
+5. Try to delete an app → Forbidden
+
+### Scene 4: Explain Internal Security (30 seconds)
+
+> *"There is zero internet exposure. No WAF needed. No DDoS protection needed. The load balancer simply does not have a public IP. You cannot hack what you cannot reach."*
+
+---
+
+# 10. Accessing ArgoCD from Your Laptop
+
+Since the LoadBalancer is **internal only**, your laptop cannot reach it directly unless you are inside the Google VPC.
+
+## Option 1: kubectl port-forward (Admin Only)
+
+```bash
+kubectl port-forward svc/argocd-server -n argocd 8080:80
+```
+
+Then open `http://localhost:8080` on your laptop.
+
+> ⚠️ This bypasses Ingress, SSO, and TLS completely. Only use this for admin emergencies.
+
+## Option 2: VPN / Company Network
+
+If your company has a VPN that connects your laptop to the Google VPC:
+1. Connect to the VPN
+2. Add to your laptop's `/etc/hosts` file:
+   ```
+   10.0.15.30  argocd.yourcompany.internal
+   ```
+3. Open `https://argocd.yourcompany.internal` in your browser
+4. Accept the self-signed certificate warning (expected for demo)
+
+## Option 3: Cloud IAP (Identity-Aware Proxy) — Production
+
+For a production setup where employees need access without a full VPN:
+
+1. IAP sits in front of your internal resource
+2. Employees authenticate with their Google account via IAP
+3. IAP forwards the request to the internal IP
+
+This is out of scope for the demo but worth mentioning to your client.
+
+## Option 4: Bastion Host (Jump Box)
+
+1. Create a small VM (f1-micro) in the same VPC
+2. Allow SSH from your IP only
+3. SSH into the bastion: `gcloud compute ssh bastion-host`
+4. From the bastion, run: `curl -k https://10.0.15.30`
+
+This proves internal access works from within the VPC.
+
+---
+
+# 11. Monthly Cost Estimate
+
+| Line Item | Detail | Monthly Cost (USD) | ~Monthly (₹) |
+|-----------|--------|-------------------|--------------|
+| GKE cluster management | $0.10/hr × 730 | **$73.00** | **~₹6,088** |
+| 2 × e2-medium nodes | $0.0335/hr × 730 × 2 | **$48.91** | **~₹4,079** |
+| Boot disks 2 × 50 GB pd-standard | $0.040/GB × 50 × 2 | **$4.00** | **~₹334** |
+| Internal Load Balancer | Forwarding rule: $0.025/hr × 730 | **$18.25** | **~₹1,522** |
+| LB processed bytes | ~$0.008/GB — negligible for ArgoCD traffic | **~$0–2** | **~₹0–167** |
+| **Total** | | **~$144–146** | **~₹12,023–12,190** |
+
+**2-week demo cost (prorated):** ~**$67** (~₹5,586)
+
+### Cost Levers
+
+| Change | Monthly Savings | When to Apply |
+|--------|----------------|---------------|
+| Use e2-medium instead of e2-standard-2 | ~$49/mo | Already done for demo |
+| Use zonal instead of regional cluster | $0 (control plane fee same) | Already done |
+| 1-Year Committed Use Discount | ~$18/mo | After cluster runs stable for 1 month |
+| Delete cluster after demo | $144/mo saved | When demo ends |
+
+---
+
+# 12. Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `Pending` pods on ArgoCD | Not enough resources | `kubectl top nodes`. Scale: `gcloud container clusters resize argocd-cluster --node-pool default-pool --num-nodes 3 --zone asia-south1-a` |
+| Ingress ADDRESS is empty | NGINX not yet ready or secret missing | Check `kubectl get pods -n ingress-nginx`. Confirm `argocd-server-tls` secret exists. |
+| `Certificate not trusted` | Self-signed cert | Expected. Click "Advanced → Proceed" in browser. |
+| SSO button missing | Dex not enabled or `url` not set in `argocd-cm` | Check `kubectl get cm argocd-cm -n argocd -o yaml`. Ensure `url:` field exists. |
+| `redirect_uri_mismatch` | Google OAuth redirect URI doesn't match | In Google Console, the URI MUST exactly match `https://argocd.yourcompany.internal/api/dex/callback` |
+| Google login blocked | `hostedDomains` mismatch | Ensure user's email domain matches the `hostedDomains` list in dex.config |
+| RBAC not working | Email not in policy.csv | Add: `g, your-email@yourcompany.com, role:admin` |
+| `502 Bad Gateway` | ArgoCD pods not healthy | `kubectl get pods -n argocd` — wait for all `1/1 Running` |
+| `404 Not Found` via Ingress | Ingress hostname mismatch | Check `kubectl get ingress -n argocd -o yaml`. Ensure `host:` matches what you type in browser. |
+| Internal LB IP doesn't appear | VPC-native networking not enabled | Cluster must have `--enable-ip-alias` |
+| Cannot reach LB from VM | Firewall rules blocking 443 | `gcloud compute firewall-rules create allow-internal-https --network default --allow tcp:443 --source-ranges 10.0.0.0/8` |
+| Lockout (no admin + SSO broken) | Disabling admin before SSO works | `kubectl patch cm argocd-cm -n argocd -p '{"data":{"admin.enabled":"true"}}'` |
+
+---
+
+# 13. Quick Command Cheat Sheet
+
+```bash
+# ===== CLUSTER =====
+gcloud container clusters get-credentials argocd-cluster --zone=asia-south1-a
+kubectl get nodes
+
+# ===== NGINX INGRESS =====
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx && helm repo update
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+  --namespace ingress-nginx --create-namespace --values nginx-values.yaml --wait --timeout 5m
+kubectl get svc -n ingress-nginx
+export ARGOCD_INTERNAL_IP=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+  -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# ===== TLS SECRET =====
+mkdir -p certs
+openssl genrsa -out certs/argocd.key 2048
+openssl req -new -x509 -key certs/argocd.key -out certs/argocd.crt -days 365 \
+  -subj "/C=IN/ST=MH/L=Mumbai/O=YourCompany/CN=argocd.yourcompany.internal"
+kubectl create namespace argocd
+kubectl create secret tls argocd-server-tls -n argocd \
+  --cert=certs/argocd.crt --key=certs/argocd.key
+
+# ===== ARGOCD =====
+helm repo add argo https://argoproj.github.io/argo-helm && helm repo update
+helm install argocd argo/argo-cd \
+  --namespace argocd --version 7.8.10 --values argocd-values.yaml --wait --timeout 10m
+kubectl get pods -n argocd
+kubectl get ingress -n argocd
+argocd admin initial-password -n argocd
+
+# ===== LOGS =====
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-server --tail=50
+kubectl logs -n argocd -l app.kubernetes.io/name=argocd-dex-server --tail=50
+
+# ===== CONFIG =====
+kubectl get cm argocd-cm -n argocd -o yaml
+kubectl get cm argocd-rbac-cm -n argocd -o yaml
+kubectl apply -f argocd-cm-patch.yaml
+kubectl apply -f argocd-rbac.yaml
+
+# ===== SECRETS =====
+kubectl create secret generic google-oauth -n argocd \
+  --from-literal=dex.google.clientSecret="SECRET"
+
+# ===== RESTARTS =====
+kubectl rollout restart deployment argocd-server -n argocd
+kubectl rollout restart deployment argocd-dex-server -n argocd
+kubectl rollout restart deployment ingress-nginx-controller -n ingress-nginx
+
+# ===== PORT-FORWARD (admin bypass — no ingress, no SSO) =====
+kubectl port-forward svc/argocd-server -n argocd 8080:80
+
+# ===== CLEANUP (to save money) =====
+helm uninstall argocd -n argocd
+helm uninstall ingress-nginx -n ingress-nginx
+kubectl delete namespace argocd
+kubectl delete namespace ingress-nginx
+gcloud container clusters delete argocd-cluster --zone=asia-south1-a
+```
+
+---
+
+**End of Guide.**
+
+> 💡 **When your client provides real certificates**: Delete `argocd-server-tls`, recreate with client's `.crt` and `.key`, restart NGINX. Everything else stays the same.
+>
+> 💡 **When adding dev / uat / prod clusters**: Use `argocd cluster add` after connecting kubectl to each cluster. They do NOT need to be on this same GKE cluster.
+>
+> 💡 **Correct install order recap**:
+> 1. Phase 4 — NGINX Ingress Controller (internal LB first)
+> 2. Phase 3 — TLS Secret (must exist before ArgoCD Helm install)
+> 3. Phase 2 — `helm install argocd` (Ingress object created automatically)
+> 4. Phase 5 — SSO
+> 5. Phase 6 — RBAC
