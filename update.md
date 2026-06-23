@@ -354,7 +354,7 @@ Browser ──[HTTPS]──► GCE Internal Application LB (L7)
 
 | Component | Why Added |
 |-----------|----------|
-| **Proxy-only subnet** (`10.129.0.0/23`) | Google-managed proxy VMs for the L7 LB live here |
+| **Proxy-only subnet** (`192.168.0.0/23`) | Google-managed proxy VMs for the L7 LB live here |
 | **Firewall rule** (proxy subnet → pods) | Google's proxies must reach your pods |
 | **Regional static IP** (reserved) | Stable IP address for the LB |
 | **Regional pre-shared SSL certificate** | GCE Internal LB requires certs uploaded to GCP |

@@ -119,7 +119,7 @@ GKE Ingress is a **built-in** Ingress controller provided by Google Cloud. When 
 │                              │  (--insecure, HTTP only)   │                │
 │                              └────────────────────────────┘                │
 │                                                                             │
-│   GOOGLE MANAGED PROXY VMS LIVE IN PROXY-ONLY SUBNET: 10.129.0.0/23       │
+│   GOOGLE MANAGED PROXY VMS LIVE IN PROXY-ONLY SUBNET: 192.168.0.0/23       │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -129,7 +129,7 @@ GKE Ingress is a **built-in** Ingress controller provided by Google Cloud. When 
 | Resource | Purpose | CIDR / Type |
 |----------|---------|-------------|
 | **GKE Node Subnet** | Where worker nodes live | Your existing subnet (e.g., `10.0.0.0/20`) |
-| **Proxy-Only Subnet** | Where Google-managed LB proxies live | `/23` range (e.g., `10.129.0.0/23`) |
+| **Proxy-Only Subnet** | Where Google-managed LB proxies live | `/23` range (e.g., `192.168.0.0/23`) |
 | **Regional Static IP** | Stable IP for the load balancer | Reserved in your node subnet |
 
 ---
@@ -294,7 +294,7 @@ Google-managed proxy VMs for the Internal Application Load Balancer need a dedic
 
 ```bash
 # Check if a proxy-only subnet already exists
-gcloud compute networks subnets list --network=$NETWORK --purpose=REGIONAL_MANAGED_PROXY
+gcloud compute networks subnets list --network=$NETWORK --filter=REGIONAL_MANAGED_PROXY
 
 # If none exists, create one
 gcloud compute networks subnets create argocd-proxy-subnet \
@@ -302,7 +302,7 @@ gcloud compute networks subnets create argocd-proxy-subnet \
     --role=ACTIVE \
     --region=$GCP_REGION \
     --network=$NETWORK \
-    --range=10.129.0.0/23 \
+    --range=192.168.0.0/23 \
     --description="Proxy-only subnet for Google Internal Application Load Balancers"
 
 echo "✅ Proxy-only subnet created in $NETWORK"
@@ -322,7 +322,7 @@ gcloud compute networks subnets describe argocd-proxy-subnet \
 **Expected output:**
 ```
 NAME                   PURPOSE                 REGION        IP_CIDR_RANGE
-argocd-proxy-subnet    REGIONAL_MANAGED_PROXY  asia-south1   10.129.0.0/23
+argocd-proxy-subnet    REGIONAL_MANAGED_PROXY  asia-south1   192.168.0.0/23
 ```
 
 ## 5.2 Create Firewall Rule for Proxy Subnet
@@ -332,7 +332,7 @@ The proxy VMs need to reach your ArgoCD pods. Without this firewall rule, health
 ```bash
 gcloud compute firewall-rules create allow-proxy-to-argocd \
     --allow=tcp:8080,tcp:80 \
-    --source-ranges=10.129.0.0/23 \
+    --source-ranges=192.168.0.0/23 \
     --network=$NETWORK \
     --direction=INGRESS \
     --priority=900 \
@@ -1252,7 +1252,7 @@ kubectl get ing argocd-server -n argocd -o yaml | grep -A3 'ingress.kubernetes.i
    ```
    Should return `ok`
 4. Firewall rules for `130.211.0.0/22` and `35.191.0.0/16` must allow port 8080
-5. Firewall rule for proxy subnet `10.129.0.0/23` must allow port 8080
+5. Firewall rule for proxy subnet `192.168.0.0/23` must allow port 8080
 
 ## 16.3 502 Bad Gateway
 
@@ -1368,11 +1368,11 @@ kubectl get nodes
 # ===== PROXY SUBNET =====
 gcloud compute networks subnets create argocd-proxy-subnet \
   --purpose=REGIONAL_MANAGED_PROXY --role=ACTIVE --region=$GCP_REGION \
-  --network=$NETWORK --range=10.129.0.0/23
+  --network=$NETWORK --range=192.168.0.0/23
 
 # ===== FIREWALL =====
 gcloud compute firewall-rules create allow-proxy-to-argocd \
-  --allow=tcp:8080 --source-ranges=10.129.0.0/23 --network=$NETWORK \
+  --allow=tcp:8080 --source-ranges=192.168.0.0/23 --network=$NETWORK \
   --priority=900 --target-tags=gke-argocd-cluster-node
 
 gcloud compute firewall-rules create allow-gcp-health-checks \

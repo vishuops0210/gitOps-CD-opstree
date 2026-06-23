@@ -190,7 +190,7 @@ gcloud compute networks subnets list \
 **Expected output:**
 ```
 NAME                   REGION        NETWORK  RANGE
-argocd-proxy-subnet  asia-south1   default  10.129.0.0/23
+argocd-proxy-subnet  asia-south1   default  192.168.0.0/23
 ```
 
 ### What If Someone Deletes It?
